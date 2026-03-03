@@ -1,0 +1,139 @@
+#include <QTRSensors.h>
+
+/* =========================
+   QTR SENSOR CONFIGURATION
+   ========================= */
+QTRSensors qtr;
+const uint8_t SensorCount = 8;
+uint16_t sensorValues[SensorCount];
+
+/* =========================
+   TB6612 MOTOR DRIVER PINS
+   ========================= */
+#define AIN1 8
+#define AIN2 9
+#define PWMA 5
+
+#define BIN1 10
+#define BIN2 11
+#define PWMB 6
+
+#define STBY 7
+
+/* =========================
+   CONTROL PARAMETERS (TUNE)
+   ========================= */
+// Proportional gain – increase for stronger correction
+float Kp = 0.12;   // <-- Tunable
+
+// Derivative gain – increase to reduce oscillations
+float Kd = 0.8;    // <-- Tunable
+
+// Maximum allowed PWM
+int maxSpeed  = 255;  // Usually kept at 255
+
+// Stores previous error for derivative term
+int lastError = 0;
+
+void setup()
+{
+  /* Motor pin configuration */
+  pinMode(AIN1, OUTPUT);
+  pinMode(AIN2, OUTPUT);
+  pinMode(PWMA, OUTPUT);
+
+  pinMode(BIN1, OUTPUT);
+  pinMode(BIN2, OUTPUT);
+  pinMode(PWMB, OUTPUT);
+
+  pinMode(STBY, OUTPUT);
+  digitalWrite(STBY, HIGH);   // Enable motor driver
+
+  /* QTR-8A setup */
+  qtr.setTypeAnalog();
+  qtr.setSensorPins((const uint8_t[]){A0,A1,A2,A3,A4,A5,A6,A7}, SensorCount);
+
+  delay(500);
+
+  /* Sensor calibration
+     Move robot left-right over the line during this phase */
+  for (int i = 0; i < 400; i++)
+  {
+    qtr.calibrate();
+  }
+}
+
+void loop()
+{
+  /* Read line position (0 – 7000) */
+  uint16_t position = qtr.readLineBlack(sensorValues);
+
+  /* Error calculation (3500 = center for 8 sensors) */
+  int error = 3500 - position;
+
+  /* Derivative term */
+  int derivative = error - lastError;
+
+  /* PD correction */
+  int correction = (Kp * error) + (Kd * derivative);
+  lastError = error;
+
+  /* =========================
+     DYNAMIC SPEED CONTROL
+     ========================= */
+
+  // Maximum straight speed (tune carefully)
+  int maxStraightSpeed = 220;   // <-- Tunable
+
+  // Minimum speed during sharp turns
+  int minTurnSpeed     = 120;   // <-- Tunable
+
+  // Reduce speed proportionally to error magnitude
+  int dynamicBase = maxStraightSpeed - (abs(error) * 0.04);  // <-- Tunable factor
+
+  // Keep speed within safe limits
+  dynamicBase = constrain(dynamicBase, minTurnSpeed, maxStraightSpeed);
+
+  /* Differential drive */
+  int leftSpeed  = dynamicBase + correction;
+  int rightSpeed = dynamicBase - correction;
+
+  setMotor(leftSpeed, rightSpeed);
+}
+
+void setMotor(int left, int right)
+{
+  /* Left motor direction */
+  if (left >= 0)
+  {
+    digitalWrite(AIN1, HIGH);
+    digitalWrite(AIN2, LOW);
+  }
+  else
+  {
+    digitalWrite(AIN1, LOW);
+    digitalWrite(AIN2, HIGH);
+    left = -left;   // Convert to positive for PWM
+  }
+
+  /* Right motor direction */
+  if (right >= 0)
+  {
+    digitalWrite(BIN1, HIGH);
+    digitalWrite(BIN2, LOW);
+  }
+  else
+  {
+    digitalWrite(BIN1, LOW);
+    digitalWrite(BIN2, HIGH);
+    right = -right;  // Convert to positive for PWM
+  }
+
+  /* Prevent PWM overflow */
+  left  = constrain(left, 0, maxSpeed);
+  right = constrain(right, 0, maxSpeed);
+
+  /* Apply PWM */
+  analogWrite(PWMA, left);
+  analogWrite(PWMB, right);
+}
